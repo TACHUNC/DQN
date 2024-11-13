@@ -8,8 +8,11 @@ import torch.nn as nn
 import numpy as np
 from scipy.optimize import minimize
 
+from torch.utils.tensorboard import SummaryWriter
+
 from network import QNetwork, DeepDQN, DeepDQN_enforce
 from buffer_replay import ReplayBuffer
+from utils import _get_grad_norm
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -29,7 +32,9 @@ class Agent():
                  n_updates:int=64,
                  n_step_bootstrapping:int=1,
                  n_multistart:int=8,
-                 seed:int=0):
+                 seed:int=0,
+                 writer:SummaryWriter=SummaryWriter):
+        
         """ Parameters:
             -----------
             - state_size (int): dimension of each state
@@ -55,7 +60,7 @@ class Agent():
         
         # Q network and optimizer
         self.network = DeepDQN_enforce(state_dim, action_dim, layer1_dim, layer2_dim, seed).to(device)
-        self.target_network = DeepDQN_enforce(state_dim, action_dim, layer1_dim, layer2_dim,seed).to(device)
+        self.target_network = DeepDQN_enforce(state_dim, action_dim, layer1_dim, layer2_dim, seed).to(device)
         self.optimizer = optim.Adam(self.network.parameters(), lr=self.learn_rate)
 
         # Replay memory
@@ -63,8 +68,11 @@ class Agent():
                                    device=device, seed=self.seed,gamma=self.gamma,
                                    nstep=n_step_bootstrapping)
         
+        # writer
+        self.writer = writer
+        
         self.t_step = 0
-        # initalize parameter for epsilon decay
+        # initalize parameters for epsilon decay
         self.epsilon_start = 1.0
         self.epsilon_end = 0.05
         self.decay_rate = 1e-5
@@ -150,20 +158,31 @@ class Agent():
         states, actions, rewards, next_states, dones = experiences
 
         with torch.no_grad():
-            Q_ , _  = self.action_selection(next_states, self.target_network,False)
+            Q_ , _  = self.action_selection(next_states, self.target_network, False)
                     
         Q_network   = self.network(states, actions)
         Q_target    = rewards + (self.gamma * Q_  * (1 - dones))        
-        loss        = F.mse_loss(Q_network,Q_target)
+        loss        = F.huber_loss(Q_network,Q_target)
 
         # Minimize the loss
         self.optimizer.zero_grad()
         loss.backward()
+        total_norm_before = _get_grad_norm(self.network)
+        # gradient clip norm
         torch.nn.utils.clip_grad_norm_(self.network.parameters(), 1)
+        total_norm_after = _get_grad_norm(self.network)
+        clipping_ratio = total_norm_before / total_norm_after
+
         self.optimizer.step()
 
         # update target network
         self.soft_update(self.network, self.target_network, self.tau)
+        # update to the tensorboard
+        self.writer.add_scalar('MSE_LOSS', loss, self.time_step)  
+        self.writer.add_scalar('Grad_norm_before', total_norm_before.item(), self.time_step)  
+        self.writer.add_scalar('Grad_norm_after', total_norm_after.item(), self.time_step)  
+        self.writer.add_scalar('Clipping_ratio', clipping_ratio.item(), self.time_step)  
+        
 
     def soft_update(self, local_model, target_model, tau):
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
@@ -179,9 +198,11 @@ class Agent():
     def predict(self,state,deterministic=True):
         self.network.eval()
         with torch.no_grad():
+            state = torch.from_numpy(state).float().to(device)
             q_value, action = self.action_selection(state,self.network,False)
         self.network.train()
         return action.squeeze().numpy().reshape((self.action_dim,)), q_value.squeeze().numpy().reshape((1,))
     
     def eps_decay(self, time_step):
+        self.time_step = time_step
         return max(self.epsilon_end, self.epsilon_start - self.decay_rate * time_step)

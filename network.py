@@ -63,6 +63,6 @@ class DeepDQN_enforce(nn.Module):
         x = self.bn2(x)
         x = F.relu(self.fc3(torch.cat([input_, x], dim=1)))
         x = self.bn3(x)
-        x = torch.tanh(self.fc4(x))
+        x = self.fc4(x)
         return x
     
