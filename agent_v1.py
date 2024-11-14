@@ -12,7 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from network import QNetwork, DeepDQN, DeepDQN_enforce
 from buffer_replay import ReplayBuffer
-from utils import _get_grad_norm
+from utils import get_grad_norm, auto_clip
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -59,8 +59,9 @@ class Agent():
         self.batch_bounds = [(self.bounds[i][0].item(), self.bounds[i][1].item()) for i in range(self.action_dim)]
         
         # Q network and optimizer
-        self.network = DeepDQN_enforce(state_dim, action_dim, layer1_dim, layer2_dim, seed).to(device)
-        self.target_network = DeepDQN_enforce(state_dim, action_dim, layer1_dim, layer2_dim, seed).to(device)
+        self.network = DeepDQN(state_dim, action_dim, layer1_dim, layer2_dim, seed).to(device)
+        self.target_network = DeepDQN(state_dim, action_dim, layer1_dim, layer2_dim, seed).to(device)
+        self.target_network.load_state_dict(self.network.state_dict())
         self.optimizer = optim.Adam(self.network.parameters(), lr=self.learn_rate)
 
         # Replay memory
@@ -68,6 +69,8 @@ class Agent():
                                    device=device, seed=self.seed,gamma=self.gamma,
                                    nstep=n_step_bootstrapping)
         
+        # autoclipping
+        self.auto_clip = auto_clip()
         # writer
         self.writer = writer
         
@@ -162,15 +165,20 @@ class Agent():
                     
         Q_network   = self.network(states, actions)
         Q_target    = rewards + (self.gamma * Q_  * (1 - dones))        
-        loss        = F.huber_loss(Q_network,Q_target)
+        # loss        = F.huber_loss(Q_network,Q_target)
+        loss        = F.mse_loss(Q_network,Q_target)
+        
 
         # Minimize the loss
         self.optimizer.zero_grad()
         loss.backward()
-        total_norm_before = _get_grad_norm(self.network)
+        total_norm_before = get_grad_norm(self.network)
+        
         # gradient clip norm
-        torch.nn.utils.clip_grad_norm_(self.network.parameters(), 1)
-        total_norm_after = _get_grad_norm(self.network)
+        # torch.nn.utils.clip_grad_norm_(self.network.parameters(), 1)
+        self.auto_clip(self.network)
+        
+        total_norm_after = get_grad_norm(self.network)
         clipping_ratio = total_norm_before / total_norm_after
 
         self.optimizer.step()
@@ -179,9 +187,9 @@ class Agent():
         self.soft_update(self.network, self.target_network, self.tau)
         # update to the tensorboard
         self.writer.add_scalar('MSE_LOSS', loss, self.time_step)  
-        self.writer.add_scalar('Grad_norm_before', total_norm_before.item(), self.time_step)  
-        self.writer.add_scalar('Grad_norm_after', total_norm_after.item(), self.time_step)  
-        self.writer.add_scalar('Clipping_ratio', clipping_ratio.item(), self.time_step)  
+        self.writer.add_scalar('Grad_norm_before', total_norm_before, self.time_step)  
+        self.writer.add_scalar('Grad_norm_after', total_norm_after, self.time_step)  
+        self.writer.add_scalar('Clipping_ratio', clipping_ratio, self.time_step)  
         
 
     def soft_update(self, local_model, target_model, tau):
