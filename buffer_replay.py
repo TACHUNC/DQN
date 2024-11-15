@@ -4,7 +4,7 @@ import random
 from collections import deque, namedtuple
 
 class ReplayBuffer:
-    def __init__(self, buffer_size, batch_size, device, seed, gamma, nstep):
+    def __init__(self, buffer_size, batch_size, device, seed, gamma, n_step):
         """Initialize a ReplayBuffer object.
         
         Params:
@@ -20,8 +20,8 @@ class ReplayBuffer:
         self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
         self.seed = random.seed(seed)
         self.gamma = gamma
-        self.n_step = nstep
-        self.n_step_buffer = deque(maxlen=nstep)
+        self.n_step = n_step
+        self.n_step_buffer = deque(maxlen=n_step)
     
     def add(self, state, action, reward, next_state, done):
         """Add a new experience to memory."""
@@ -62,16 +62,16 @@ class PrioritizedReplay(object):
     """
     Proportional Prioritization
     """
-    def __init__(self, capacity, batch_size, seed, gamma=0.99, n_step=1, alpha=0.6, beta_start = 0.4, beta_frames=100000):
+    def __init__(self, buffer_size, batch_size, device, seed=0, gamma=0.99, n_step=1, alpha=0.6, beta_start = 0.4, beta_frames=100000):
         self.alpha = alpha
         self.beta_start = beta_start
         self.beta_frames = beta_frames
         self.frame = 1 #for beta calculation
         self.batch_size = batch_size
-        self.capacity   = capacity
+        self.capacity   = buffer_size
         self.buffer     = []
         self.pos        = 0
-        self.priorities = np.zeros((capacity,), dtype=np.float32)
+        self.priorities = np.zeros((buffer_size,), dtype=np.float32)
         self.seed = np.random.seed(seed)
         self.n_step = n_step
         self.n_step_buffer = deque(maxlen=self.n_step)

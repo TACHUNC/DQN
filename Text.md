@@ -110,7 +110,7 @@ A: Using autoclip
 - auto_clip
 - tau = 0.001
 
-### Pretrain-8, Deep_DQN_4
+### Pretrain-9, Deep_DQN_4
 - update_every = 5   
 - n_updates= 1               
 - n_multistart= 12
@@ -122,7 +122,7 @@ A: Using autoclip
 - auto_clip
 - tau = 0.001
   
-### Pretrain-9, Deep_DQN_5
+### Pretrain-10, Deep_DQN_5
 - update_every = `10`   
 - n_updates= 1               
 - n_multistart= 12
@@ -134,7 +134,7 @@ A: Using autoclip
 - auto_clip
 - tau = 0.001
 
-### Pretrain-9, Deep_DQN_6
+### Pretrain-11, Deep_DQN_6
 - update_every = `10`   
 - n_updates= 1               
 - n_multistart= 12

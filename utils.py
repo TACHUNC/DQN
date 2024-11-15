@@ -1,7 +1,10 @@
 import os
+import shutil
 import torch
 import torch.nn as nn
 import numpy as np
+from torch.utils.tensorboard import SummaryWriter
+
 
 from collections import deque
 from typing import Union
@@ -37,7 +40,6 @@ class Save_model_logfile:
         
         # path to model weighting      
         self.checkpoint_path = directory_name + algo_name + "_{}_{}_{}.pth".format(env_name, seed, run_num)
-    
     
     def log_path(self):
         return self.log_f_name
@@ -81,3 +83,54 @@ class auto_clip:
     
     def __call__(self, model:nn.Module, norm_type:float=2, clip_percentile:float=10) -> None:
         return self._auto_clip_grad_norm(model,norm_type,clip_percentile)
+    
+    
+class Save_helper:
+    def __init__(self,
+                 algo_name:str,
+                 env_name="cstr_ode", 
+                 seed=0):
+        
+        directory_name= 'PreTrained'
+        
+        if not os.path.exists(directory_name):
+            os.makedirs(directory_name)
+
+        directory_name = directory_name + '/' + env_name + '/'
+        
+        if not os.path.exists(directory_name):
+            os.makedirs(directory_name)
+                
+        directory_name = directory_name + algo_name + '/'
+
+        if not os.path.exists(directory_name):
+            os.makedirs(directory_name)
+        
+
+        current_num_files = next(os.walk(directory_name))[1]
+
+        run_num = len(current_num_files) + 1
+        
+        directory_name += "{}_{}".format(seed,run_num) + "/"
+        
+        if not os.path.exists(directory_name):
+            os.makedirs(directory_name)
+                
+        self.directory_name = directory_name
+        
+        # ------ tensorboard set-up  ------#
+        logdir = "tensorboard_experiments/"
+        if not os.path.exists(logdir):
+            os.makedirs(logdir)
+            
+        logdir = logdir + "{}_{}".format(algo_name, run_num)
+        if os.path.exists(logdir):
+            shutil.rmtree(logdir)
+            
+        self.writer = SummaryWriter(log_dir=logdir)
+        
+    def model_path(self,episode_length):
+        return self.directory_name + "{}.pth".format(episode_length)
+    
+
+    

@@ -11,7 +11,7 @@ from scipy.optimize import minimize
 from torch.utils.tensorboard import SummaryWriter
 
 from network import QNetwork, DeepDQN, DeepDQN_enforce
-from buffer_replay import ReplayBuffer
+from buffer_replay import ReplayBuffer, PrioritizedReplay
 from utils import get_grad_norm, auto_clip
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -33,7 +33,9 @@ class Agent():
                  n_step_bootstrapping:int=1,
                  n_multistart:int=8,
                  seed:int=0,
-                 writer:SummaryWriter=SummaryWriter):
+                 writer:SummaryWriter=SummaryWriter,
+                 network_type:str='DQN',
+                 use_prioritize:bool=False):
         
         """ Parameters:
             -----------
@@ -58,16 +60,29 @@ class Agent():
         self.bounds = bounds
         self.batch_bounds = [(self.bounds[i][0].item(), self.bounds[i][1].item()) for i in range(self.action_dim)]
         
-        # Q network and optimizer
-        self.network = DeepDQN(state_dim, action_dim, layer1_dim, layer2_dim, seed).to(device)
-        self.target_network = DeepDQN(state_dim, action_dim, layer1_dim, layer2_dim, seed).to(device)
+        # network
+        _network = {'DQN':QNetwork,'Deep_DQN':DeepDQN,'Deep_DQN_enforce':DeepDQN_enforce}
+        if network_type not in _network:
+            raise ValueError(f"Unexpected network_type '{network_type}'. Expected one of: {list(_network.keys())}")
+
+        _network = _network[network_type]
+        
+        self.network = _network(state_dim, action_dim, layer1_dim, layer2_dim, seed).to(device)
+        self.target_network = _network(state_dim, action_dim, layer1_dim, layer2_dim, seed).to(device)
         self.target_network.load_state_dict(self.network.state_dict())
         self.optimizer = optim.Adam(self.network.parameters(), lr=self.learn_rate)
 
         # Replay memory
-        self.memory = ReplayBuffer(buffer_size=buffer_size,batch_size=batch_size,
-                                   device=device, seed=self.seed,gamma=self.gamma,
-                                   nstep=n_step_bootstrapping)
+        if use_prioritize:
+            _replay_buffer = PrioritizedReplay
+            self.learn_optimizer = self.learn_per
+        else:
+            _replay_buffer = ReplayBuffer
+            self.learn_optimizer = self.learn
+
+        self.memory = _replay_buffer(buffer_size=buffer_size,batch_size=batch_size,
+                                    device=device, seed=self.seed,gamma=self.gamma,
+                                    n_step=n_step_bootstrapping)
         
         # autoclipping
         self.auto_clip = auto_clip()
@@ -87,7 +102,7 @@ class Agent():
             if len(self.memory) > self.batch_size:
                 for _ in range(self.n_updates):
                     experiences = self.memory.sample()
-                    self.learn(experiences)
+                    self.learn_optimizer(experiences)
 
     def action_selection(self, states, network:nn.Module, eps_greedy:bool, time_step:int=0)->tuple[torch.Tensor, torch.Tensor]:
         batch_size = self.batch_size
@@ -165,10 +180,9 @@ class Agent():
                     
         Q_network   = self.network(states, actions)
         Q_target    = rewards + (self.gamma * Q_  * (1 - dones))        
-        # loss        = F.huber_loss(Q_network,Q_target)
-        loss        = F.mse_loss(Q_network,Q_target)
+        loss        = F.huber_loss(Q_network,Q_target)
+        # loss        = F.mse_loss(Q_network,Q_target)
         
-
         # Minimize the loss
         self.optimizer.zero_grad()
         loss.backward()
@@ -191,7 +205,51 @@ class Agent():
         self.writer.add_scalar('Grad_norm_after', total_norm_after, self.time_step)  
         self.writer.add_scalar('Clipping_ratio', clipping_ratio, self.time_step)  
         
+    def learn_per(self, experiences):
 
+        states, actions, rewards, next_states, dones, idx, weights = experiences
+
+        states = torch.FloatTensor(states).to(device)
+        next_states = torch.FloatTensor(np.float32(next_states)).to(device)
+        actions = np.array(actions) 
+        actions = torch.FloatTensor(actions).to(device)
+        rewards = torch.FloatTensor(rewards).to(device).unsqueeze(1) 
+        dones   = torch.FloatTensor(dones).to(device).unsqueeze(1)
+        weights = torch.FloatTensor(weights).unsqueeze(1).to(device)
+        
+        with torch.no_grad():
+            Q_ , _  = self.action_selection(next_states, self.target_network, False)
+                    
+        Q_network   = self.network(states, actions)
+        Q_target    = rewards + (self.gamma * Q_  * (1 - dones))        
+
+        # Compute loss
+        td_error = Q_network - Q_target
+        loss = (F.huber_loss(Q_network, Q_target)*weights).mean().to(device)
+        
+        # Minimize the loss
+        self.optimizer.zero_grad()
+        loss.backward()
+        total_norm_before = get_grad_norm(self.network)
+        # gradient clip norm
+        # torch.nn.utils.clip_grad_norm_(self.network.parameters(), 1)
+        self.auto_clip(self.network)
+        total_norm_after = get_grad_norm(self.network)
+        clipping_ratio = total_norm_before / total_norm_after
+
+        self.optimizer.step()
+
+        # update target network
+        self.soft_update(self.network, self.target_network, self.tau)
+        # update to the tensorboard
+        self.writer.add_scalar('MSE_LOSS', loss, self.time_step)  
+        self.writer.add_scalar('Grad_norm_before', total_norm_before, self.time_step)  
+        self.writer.add_scalar('Grad_norm_after', total_norm_after, self.time_step)  
+        self.writer.add_scalar('Clipping_ratio', clipping_ratio, self.time_step) 
+        # update per priorities
+        self.memory.update_priorities(idx, abs(td_error.data.cpu().numpy()))
+
+    
     def soft_update(self, local_model, target_model, tau):
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
             target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
